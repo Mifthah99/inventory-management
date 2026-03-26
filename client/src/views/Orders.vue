@@ -74,6 +74,45 @@
           </table>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">{{ t('restocking.submittedOrders') }}</h3>
+        </div>
+        <div class="table-container">
+          <div v-if="submittedOrders.length === 0" class="empty-state">
+            {{ t('restocking.noSubmittedOrders') }}
+          </div>
+          <table v-else class="orders-table restock-table">
+            <thead>
+              <tr>
+                <th>{{ t('restocking.orderNumber') }}</th>
+                <th>{{ t('orders.table.items') }}</th>
+                <th>{{ t('restocking.orderDate') }}</th>
+                <th>{{ t('restocking.expectedDelivery') }}</th>
+                <th>{{ t('restocking.leadTime') }}</th>
+                <th>{{ t('restocking.totalValue') }}</th>
+                <th>{{ t('restocking.status') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="order in submittedOrders" :key="order.id">
+                <td><strong>{{ order.order_number }}</strong></td>
+                <td>{{ order.items.length }}</td>
+                <td>{{ formatDate(order.order_date) }}</td>
+                <td>{{ formatDate(order.expected_delivery) }}</td>
+                <td>{{ order.lead_time_days }} {{ t('restocking.days') }}</td>
+                <td><strong>{{ currencySymbol }}{{ order.total_value.toLocaleString() }}</strong></td>
+                <td>
+                  <span :class="['badge', getOrderStatusClass(order.status)]">
+                    {{ t(`status.${order.status.toLowerCase()}`) }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -95,6 +134,7 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const submittedOrders = ref([])
 
     // Use shared filters
     const {
@@ -124,9 +164,19 @@ export default {
       }
     }
 
+    const loadSubmittedOrders = async () => {
+      try {
+        const result = await api.getSubmittedRestockingOrders()
+        submittedOrders.value = result
+      } catch (err) {
+        console.error('Failed to load submitted restocking orders:', err)
+      }
+    }
+
     // Watch for filter changes and reload data
     watch([selectedPeriod, selectedLocation, selectedCategory, selectedStatus], () => {
       loadOrders()
+      loadSubmittedOrders()
     })
 
     const getOrdersByStatus = (status) => {
@@ -153,19 +203,24 @@ export default {
       })
     }
 
-    onMounted(loadOrders)
+    onMounted(() => {
+      loadOrders()
+      loadSubmittedOrders()
+    })
 
     return {
       t,
       loading,
       error,
       orders,
+      submittedOrders,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
       currencySymbol,
       translateProductName,
-      translateCustomerName
+      translateCustomerName,
+      loadSubmittedOrders
     }
   }
 }
@@ -275,5 +330,16 @@ export default {
 .item-meta {
   font-size: 0.813rem;
   color: #64748b;
+}
+
+.empty-state {
+  padding: 2rem;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.875rem;
+}
+
+.restock-table {
+  table-layout: auto;
 }
 </style>

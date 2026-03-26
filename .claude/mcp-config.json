@@ -1,13 +1,16 @@
 {
   "mcpServers": {
     "playwright": {
-      "command": "npx",
+      "type": "stdio",
+      "command": "C:\\Program Files\\nodejs\\node.exe",
       "args": [
-        "@playwright/mcp@latest"
-      ]
+        "C:\\Users\\asus\\AppData\\Local\\npm-cache\\_npx\\2c398aa58ef21a7d\\node_modules\\@playwright\\mcp\\cli.js"
+      ],
+      "env": {}
     },
     "github": {
-      "command": "npx",
+      "type": "stdio",
+      "command": "C:\\Program Files\\nodejs\\npx.cmd",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"

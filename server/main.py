@@ -120,6 +120,57 @@ class CreatePurchaseOrderRequest(BaseModel):
     expected_delivery_date: str
     notes: Optional[str] = None
 
+class RestockingItem(BaseModel):
+    item_sku: str
+    item_name: str
+    quantity: int
+    unit_cost: float
+    total_cost: float
+
+class CreateRestockingOrderRequest(BaseModel):
+    items: List[RestockingItem]
+    total_budget: float
+    warehouse: str
+
+class RestockingOrderResponse(BaseModel):
+    id: str
+    order_number: str
+    items: List[dict]
+    status: str
+    order_date: str
+    expected_delivery: str
+    total_value: float
+    warehouse: str
+    category: str
+    customer: str
+
+# Category-based lead times in days for restocking orders
+CATEGORY_LEAD_TIMES = {
+    "Circuit Boards": 14,
+    "Sensors": 7,
+    "Actuators": 10,
+    "Controllers": 12,
+    "Power Supplies": 9,
+}
+DEFAULT_LEAD_TIME = 10
+
+# Keyword-to-category mapping for demand forecast items that don't match inventory SKUs
+CATEGORY_KEYWORDS = {
+    "Sensors": ["sensor", "gasket", "filter", "valve", "bearing", "widget"],
+    "Actuators": ["motor", "servo", "actuator"],
+    "Controllers": ["controller", "logic", "board", "processor"],
+    "Power Supplies": ["power", "supply", "psu"],
+    "Circuit Boards": ["pcb", "circuit", "board"],
+}
+
+def infer_category(item_name: str) -> str:
+    """Infer product category from item name keywords when no inventory match exists."""
+    name_lower = item_name.lower()
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        if any(kw in name_lower for kw in keywords):
+            return category
+    return "Sensors"  # Reasonable default for industrial parts
+
 # API endpoints
 @app.get("/")
 def root():
@@ -303,6 +354,137 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+# In-memory store for submitted restocking orders
+submitted_restocking_orders = []
+
+@app.get("/api/restocking/recommendations")
+def get_restocking_recommendations(budget: float = 50000):
+    """Recommend items to restock based on demand forecasts and available budget.
+    Prioritizes items with highest forecasted demand first."""
+    # Build recommendations by joining forecasts with inventory for unit costs
+    recommendations = []
+    for forecast in demand_forecasts:
+        # Try SKU match first, then name match as fallback
+        matching_item = next(
+            (item for item in inventory_items if item["sku"] == forecast["item_sku"]),
+            None
+        )
+        if not matching_item:
+            matching_item = next(
+                (item for item in inventory_items if item["name"].lower() == forecast["item_name"].lower()),
+                None
+            )
+        unit_cost = matching_item["unit_cost"] if matching_item else 25.0
+        category = matching_item["category"] if matching_item else infer_category(forecast["item_name"])
+
+        # Recommended quantity is the forecasted demand
+        recommended_qty = forecast["forecasted_demand"]
+        total_cost = round(recommended_qty * unit_cost, 2)
+
+        lead_time_days = CATEGORY_LEAD_TIMES.get(category, DEFAULT_LEAD_TIME)
+
+        recommendations.append({
+            "item_sku": forecast["item_sku"],
+            "item_name": forecast["item_name"],
+            "current_demand": forecast["current_demand"],
+            "forecasted_demand": forecast["forecasted_demand"],
+            "trend": forecast["trend"],
+            "unit_cost": unit_cost,
+            "recommended_qty": recommended_qty,
+            "total_cost": total_cost,
+            "category": category,
+            "lead_time_days": lead_time_days
+        })
+
+    # Sort by highest forecasted demand first
+    recommendations.sort(key=lambda x: x["forecasted_demand"], reverse=True)
+
+    # Select items that fit within budget
+    selected = []
+    remaining_budget = budget
+    for rec in recommendations:
+        if rec["total_cost"] <= remaining_budget:
+            rec["selected"] = True
+            remaining_budget -= rec["total_cost"]
+        else:
+            # Try partial quantity if item doesn't fully fit
+            affordable_qty = int(remaining_budget / rec["unit_cost"])
+            if affordable_qty > 0:
+                rec["recommended_qty"] = affordable_qty
+                rec["total_cost"] = round(affordable_qty * rec["unit_cost"], 2)
+                rec["selected"] = True
+                remaining_budget -= rec["total_cost"]
+            else:
+                rec["selected"] = False
+        selected.append(rec)
+
+    return {
+        "recommendations": selected,
+        "total_budget": budget,
+        "budget_used": round(budget - remaining_budget, 2),
+        "budget_remaining": round(remaining_budget, 2)
+    }
+
+@app.post("/api/restocking/orders")
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    """Submit a restocking order. Creates an order visible in the Orders tab."""
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    order_id = str(len(orders) + len(submitted_restocking_orders) + 1)
+    order_number = f"RST-2025-{len(submitted_restocking_orders) + 1:04d}"
+
+    # Determine lead time from the items' categories
+    max_lead_time = DEFAULT_LEAD_TIME
+    order_items = []
+    for item in request.items:
+        # Look up category for lead time calculation
+        matching_inv = next(
+            (inv for inv in inventory_items if inv["sku"] == item.item_sku),
+            None
+        )
+        category = matching_inv["category"] if matching_inv else "General"
+        lead_time = CATEGORY_LEAD_TIMES.get(category, DEFAULT_LEAD_TIME)
+        max_lead_time = max(max_lead_time, lead_time)
+
+        order_items.append({
+            "sku": item.item_sku,
+            "name": item.item_name,
+            "quantity": item.quantity,
+            "unit_price": item.unit_cost
+        })
+
+    expected_delivery = now + timedelta(days=max_lead_time)
+
+    new_order = {
+        "id": order_id,
+        "order_number": order_number,
+        "customer": "Internal Restocking",
+        "items": order_items,
+        "status": "Processing",
+        "order_date": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "expected_delivery": expected_delivery.strftime("%Y-%m-%dT%H:%M:%S"),
+        "total_value": round(request.total_budget, 2),
+        "warehouse": request.warehouse if request.warehouse != "all" else "San Francisco",
+        "category": order_items[0]["name"].split()[0] if order_items else "General",
+        "lead_time_days": max_lead_time,
+        "is_restocking": True
+    }
+
+    submitted_restocking_orders.append(new_order)
+
+    return new_order
+
+@app.get("/api/restocking/submitted-orders")
+def get_submitted_restocking_orders():
+    """Get all submitted restocking orders"""
+    return submitted_restocking_orders
+
+@app.get("/api/restocking/lead-times")
+def get_lead_times():
+    """Get category-based lead times"""
+    return CATEGORY_LEAD_TIMES
 
 if __name__ == "__main__":
     import uvicorn
